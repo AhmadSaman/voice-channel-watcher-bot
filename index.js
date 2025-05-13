@@ -7,19 +7,25 @@ const {
   REST,
   Routes,
 } = require("discord.js");
-const Database = require("better-sqlite3");
+const mongoose = require("mongoose");
 
-const db = new Database("servers.db");
+async function connectToDatabase() {
+  try {
+    await mongoose.connect(process.env.MONGODB_URI);
+    console.log("✅ Connected to MongoDB");
+  } catch (error) {
+    console.error("❌ MongoDB connection error:", error);
+    process.exit(1);
+  }
+}
+connectToDatabase();
 
-db.prepare(
-  `
-  CREATE TABLE IF NOT EXISTS servers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    server_id TEXT UNIQUE,
-    channel_id TEXT
-  )
-`
-).run();
+const serverSchema = new mongoose.Schema({
+  guildId: { type: Number, required: true },
+  channelId: { type: Number, required: true },
+});
+
+model = mongoose.model("Server", serverSchema);
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
@@ -27,6 +33,7 @@ const client = new Client({
 
 client.login(process.env.DISCORD_TOKEN).catch(console.error);
 
+// register slash commands
 client.once("ready", async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
@@ -41,6 +48,7 @@ client.once("ready", async () => {
   }
 });
 
+// define commands
 const commands = [
   new SlashCommandBuilder()
     .setName("setlogchannel")
@@ -55,36 +63,30 @@ const commands = [
     .toJSON(),
 ];
 
+// command listener
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
-
   if (interaction.commandName === "setlogchannel") {
     const channel = interaction.options.getChannel("channel");
-
-    const upsert = db.prepare(
-      `INSERT INTO servers (server_id, channel_id)
-       VALUES (?, ?)
-       ON CONFLICT(server_id) DO UPDATE SET channel_id=excluded.channel_id`
-    );
-    upsert.run(interaction.guildId, channel.id);
-    await interaction.reply(
-      `✅ Voice join logs will be sent to <#${channel.id}>.`
+    await model.findOneAndUpdate(
+      { guildId: interaction.guildId },
+      { guildId: interaction.guildId, channelId: channel.id },
+      { upsert: true, new: true }
     );
   }
 });
 
-client.on("voiceStateUpdate", (oldState, newState) => {
+// For listening to voice state updates
+client.on("voiceStateUpdate", async (oldState, newState) => {
   const user = newState.member?.user || oldState.member?.user;
   const joinedChannel = newState.channel;
 
   if (!oldState.channel && newState.channel) {
     console.log(`${user.tag} joined ${joinedChannel.name}`);
 
-    const row = db
-      .prepare("SELECT channel_id FROM servers WHERE server_id = ?")
-      .get(newState.guild.id);
-    const textChannel = row
-      ? newState.guild.channels.cache.get(row.channel_id)
+    const doc = await model.findOne({ guildId: newState.guild.id });
+    const textChannel = doc
+      ? newState.guild.channels.cache.get(doc.channel_id)
       : null;
     if (textChannel) {
       textChannel.send(
